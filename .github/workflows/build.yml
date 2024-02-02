@@ -36,14 +36,7 @@ jobs:
           cd build
           cmake .. -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=OFF -DBUILD_SHARED_LIBS=true
           cmake --build . --config Release -j $(sysctl -n hw.logicalcpu)
-      
-      - name: Create release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
+    
       
       - name: Upload release artifacts
         uses: actions/upload-artifact@v2
@@ -78,14 +71,7 @@ jobs:
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
           cmake --build . --config Release -j $(sysctl -n hw.logicalcpu)
-      
-      - name: Create release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
+    
       
       - name: Upload release artifacts
         uses: actions/upload-artifact@v2
@@ -121,14 +107,6 @@ jobs:
             -DCMAKE_C_FLAGS=-march=armv8.4a+dotprod \
             -DBUILD_SHARED_LIBS=true ..
           make
-
-      - name: Create release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
       
       - name: Upload release artifacts
         uses: actions/upload-artifact@v2
