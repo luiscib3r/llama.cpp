@@ -337,6 +337,7 @@ namespace dpct
         }
         size_t get_global_mem_size() const { return _global_mem_size; }
         size_t get_local_mem_size() const { return _local_mem_size; }
+        size_t get_max_mem_alloc_size() const { return _max_mem_alloc_size; }
         /// Returns the maximum clock rate of device's global memory in kHz. If
         /// compiler does not support this API then returns default value 3200000 kHz.
         unsigned int get_memory_clock_rate() const { return _memory_clock_rate; }
@@ -397,6 +398,10 @@ namespace dpct
         void set_local_mem_size(size_t local_mem_size)
         {
             _local_mem_size = local_mem_size;
+        }
+        void set_max_mem_alloc_size(size_t max_mem_alloc_size)
+        {
+            _max_mem_alloc_size = max_mem_alloc_size;
         }
         void set_max_work_group_size(int max_work_group_size)
         {
@@ -465,6 +470,7 @@ namespace dpct
         int _max_register_size_per_work_group;
         size_t _global_mem_size;
         size_t _local_mem_size;
+        size_t _max_mem_alloc_size;
         size_t _max_nd_range_size[3];
         int _max_nd_range_size_i[3];
         uint32_t _device_id;
@@ -516,6 +522,7 @@ namespace dpct
             dev.get_info<sycl::info::device::max_work_group_size>());
         prop.set_global_mem_size(dev.get_info<sycl::info::device::global_mem_size>());
         prop.set_local_mem_size(dev.get_info<sycl::info::device::local_mem_size>());
+        prop.set_max_mem_alloc_size(dev.get_info<sycl::info::device::max_mem_alloc_size>());
 
 #if (defined(SYCL_EXT_INTEL_DEVICE_INFO) && SYCL_EXT_INTEL_DEVICE_INFO >= 6)
         if (dev.has(sycl::aspect::ext_intel_memory_clock_rate))
@@ -642,6 +649,11 @@ namespace dpct
         size_t get_global_mem_size() const
         {
             return get_device_info().get_global_mem_size();
+        }
+
+        size_t get_max_mem_alloc_size() const
+        {
+            return get_device_info().get_max_mem_alloc_size();
         }
 
         /// Get the number of bytes of free and total memory on the SYCL device.
@@ -1354,6 +1366,7 @@ namespace dpct
             }
 #else
             return q.memcpy(to_ptr, from_ptr, size, dep_events);
+            GGML_UNUSED(direction);
 #endif // DPCT_USM_LEVEL_NONE
         }
 
@@ -1655,7 +1668,7 @@ namespace dpct
             using Ty = typename DataType<T>::T2;
             Ty s_h;
             if (get_pointer_attribute(q, s) == pointer_access_attribute::device_only)
-                detail::dpct_memcpy(q, (void *)&s_h, (void *)s, sizeof(T), device_to_host)
+                detail::dpct_memcpy(q, (void *)&s_h, (const void *)s, sizeof(T), device_to_host)
                     .wait();
             else
                 s_h = *reinterpret_cast<const Ty *>(s);
@@ -1679,6 +1692,20 @@ namespace dpct
                               int ldb, const void *beta, void *c, int ldc)
         {
 #ifndef __INTEL_MKL__
+            GGML_UNUSED(q);
+            GGML_UNUSED(a_trans);
+            GGML_UNUSED(b_trans);
+            GGML_UNUSED(m);
+            GGML_UNUSED(n);
+            GGML_UNUSED(k);
+            GGML_UNUSED(alpha);
+            GGML_UNUSED(a);
+            GGML_UNUSED(lda);
+            GGML_UNUSED(b);
+            GGML_UNUSED(ldb);
+            GGML_UNUSED(beta);
+            GGML_UNUSED(c);
+            GGML_UNUSED(ldc);
             throw std::runtime_error("The oneAPI Math Kernel Library (oneMKL) Interfaces "
                                      "Project does not support this API.");
 #else
@@ -1818,7 +1845,7 @@ namespace dpct
 
     template <typename T>
     T permute_sub_group_by_xor(sycl::sub_group g, T x, unsigned int mask,
-                               int logical_sub_group_size = 32)
+                               unsigned int logical_sub_group_size = 32)
     {
         unsigned int id = g.get_local_linear_id();
         unsigned int start_index =
@@ -2148,6 +2175,7 @@ namespace dpct
         }
 #else
         return q.memcpy(to_ptr, from_ptr, size, dep_events);
+        GGML_UNUSED(direction);
 #endif // DPCT_USM_LEVEL_NONE
     }
 
@@ -3290,7 +3318,7 @@ void log_ggml_var_device(const char*name, float *src, size_t total_elements, boo
     std::ofstream logfile;
     logfile.open(filename);
     // printf("local buf element %d\n", total_elements);
-    for(int i=0; i<total_elements; i++){
+    for(size_t i=0; i<total_elements; i++){
         if((i+1)%20 ==0) logfile <<std::endl;
         else logfile << local_buf[i] <<" ";
     }
@@ -3384,6 +3412,7 @@ static __dpct_inline__ float warp_reduce_max(float x,
 
 static __dpct_inline__ float op_repeat(const float a, const float b) {
     return b;
+    GGML_UNUSED(a);
 }
 
 static __dpct_inline__ float op_add(const float a, const float b) {
@@ -8218,7 +8247,8 @@ static void clamp_f32(const float * x, float * dst, const float min, const float
     dst[i] = x[i] < min ? min : (x[i] > max ? max : x[i]);
 }
 
-static void im2col_f32_f16(const float *x, sycl::half *dst, int offset_delta,
+template <typename T>
+static void im2col_kernel(const float *x, T *dst, int offset_delta,
                            int IW, int IH, int OW, int KW, int KH,
                            int pelements, int CHW, int s0, int s1, int p0,
                            int p1, int d0, int d1,
@@ -10990,7 +11020,8 @@ static void soft_max_f32_sycl(const float *x, const float *y, float *dst,
     });
 }
 
-static void im2col_f32_f16_sycl(const float *x, sycl::half *dst, int IW, int IH,
+template <typename T>
+static void im2col_sycl(const float *x, T *dst, int IW, int IH,
                                 int OW, int OH, int KW, int KH, int IC,
                                 int offset_delta, int s0, int s1, int p0,
                                 int p1, int d0, int d1,
@@ -11007,7 +11038,7 @@ static void im2col_f32_f16_sycl(const float *x, sycl::half *dst, int IW, int IH,
                                   sycl::range<3>(1, 1, SYCL_IM2COL_BLOCK_SIZE),
                               sycl::range<3>(1, 1, SYCL_IM2COL_BLOCK_SIZE)),
             [=](sycl::nd_item<3> item_ct1) {
-                im2col_f32_f16(x, dst, offset_delta, IW, IH, OW, KW, KH,
+                im2col_kernel(x, dst, offset_delta, IW, IH, OW, KW, KH,
                                parallel_elements, (IC * KH * KW), s0, s1, p0,
                                p1, d0, d1, item_ct1);
             });
@@ -11144,10 +11175,10 @@ DPCT1082:64: Migration of CUmemGenericAllocationHandle type is not supported.
 //     g_sycl_pool_handles[GGML_SYCL_MAX_DEVICES];
 static dpct::device_ptr g_sycl_pool_addr[GGML_SYCL_MAX_DEVICES] = {0};
 static size_t g_sycl_pool_used[GGML_SYCL_MAX_DEVICES] = {0};
-static const size_t SYCL_POOL_VMM_MAX_SIZE = 1ull << 36; // 64 GB
 
 static void *ggml_sycl_pool_malloc_vmm(size_t size, size_t *actual_size) try {
-
+    GGML_UNUSED(size);
+    GGML_UNUSED(actual_size);
     return NULL;
 }
 catch (sycl::exception const &exc) {
@@ -11311,10 +11342,10 @@ void ggml_init_sycl() try {
         GGML_ASSERT(g_all_sycl_device_count <= GGML_SYCL_MAX_DEVICES);
         int64_t total_vram = 0;
 
-#if defined(GGML_SYCL_FP16)
-        fprintf(stderr, "%s: GGML_SYCL_FP16:   yes\n", __func__);
+#if defined(GGML_SYCL_F16)
+        fprintf(stderr, "%s: GGML_SYCL_F16:   yes\n", __func__);
 #else
-        fprintf(stderr, "%s: GGML_SYCL_FP16:   no\n", __func__);
+        fprintf(stderr, "%s: GGML_SYCL_F16:   no\n", __func__);
 #endif
 
 
@@ -11337,9 +11368,8 @@ void ggml_init_sycl() try {
             if(id!=user_device_id) continue;
 
             device_inx++;
-            int device_vmm = 0;
 
-            g_device_caps[device_inx].vmm = !!device_vmm;
+            g_device_caps[device_inx].vmm = 0;
             g_device_caps[device_inx].device_id = id;
             g_sycl_device_id2index[id].index = device_inx;
 
@@ -11347,18 +11377,12 @@ void ggml_init_sycl() try {
             SYCL_CHECK(CHECK_TRY_ERROR(dpct::get_device_info(
                 prop, dpct::dev_mgr::instance().get_device(id))));
 
-            // fprintf(stderr,
-            //         "  Device %d: %s, compute capability %d.%d, VMM: %s\n", id,
-            //         prop.get_name(), prop.get_major_version(),
-            //         prop.get_minor_version(), device_vmm ? "yes" : "no");
-
             g_tensor_split[device_inx] = total_vram;
             total_vram += prop.get_global_mem_size();
 
             g_device_caps[device_inx].cc =
                 100 * prop.get_major_version() + 10 * prop.get_minor_version();
 
-            // printf("g_device_caps[%d].cc=%d\n", device_inx, g_device_caps[device_inx].cc);
         }
         device_inx = -1;
         for (int id = 0; id < g_all_sycl_device_count; ++id) {
@@ -12194,7 +12218,6 @@ inline void ggml_sycl_op_mul_mat_sycl(
     // ldc == nrows of the matrix that cuBLAS writes into
     int ldc = dst->backend == GGML_BACKEND_GPU && device_id == g_main_device ? ne0 : row_diff;
 
-    const int compute_capability = g_device_caps[id].cc;
 #ifdef GGML_SYCL_F16
     bool use_fp16 = true;  // TODO(Yu) SYCL capability check
 #else
@@ -12403,7 +12426,7 @@ inline void ggml_sycl_op_im2col(const ggml_tensor *src0,
 
     GGML_ASSERT(src0->type == GGML_TYPE_F16);
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
-    GGML_ASSERT( dst->type == GGML_TYPE_F16);
+    GGML_ASSERT( dst->type == GGML_TYPE_F16 || dst->type == GGML_TYPE_F32);
 
     const int32_t s0 = ((const int32_t*)(dst->op_params))[0];
     const int32_t s1 = ((const int32_t*)(dst->op_params))[1];
@@ -12426,8 +12449,11 @@ inline void ggml_sycl_op_im2col(const ggml_tensor *src0,
 
     const size_t delta_offset = src1->nb[is_2D ? 2 : 1] / 4; // nb is byte offset, src is type float32
 
-    im2col_f32_f16_sycl(src1_dd, (sycl::half *)dst_dd, IW, IH, OW, OH, KW, KH,
-                        IC, delta_offset, s0, s1, p0, p1, d0, d1, main_stream);
+    if (dst->type == GGML_TYPE_F16) {
+        im2col_sycl(src1_dd, (sycl::half *)dst_dd, IW, IH, OW, OH, KW, KH, IC, delta_offset, s0, s1, p0, p1, d0, d1, main_stream);
+    } else {
+        im2col_sycl(src1_dd, (float *)dst_dd, IW, IH, OW, OH, KW, KH, IC, delta_offset, s0, s1, p0, p1, d0, d1, main_stream);
+    }
 
     (void) src0;
     (void) src0_dd;
@@ -12679,7 +12705,7 @@ static void ggml_sycl_set_peer_access(const int n_tokens) {
                 continue;
             }
 
-            int can_access_peer;
+            // int can_access_peer;
             // SYCL_CHECK(syclDeviceCanAccessPeer(&can_access_peer, id, id_other));
             // if (can_access_peer) {
             //     if (enable_peer_access) {
@@ -12704,7 +12730,6 @@ static void ggml_sycl_op_mul_mat(const ggml_tensor *src0,
     const int64_t ne01 = src0->ne[1];
     const int64_t ne02 = src0->ne[2];
     const int64_t ne03 = src0->ne[3];
-    const int64_t nrows0 = ggml_nrows(src0);
 
     const int64_t ne10 = src1->ne[0];
     const int64_t ne11 = src1->ne[1];
@@ -13800,13 +13825,6 @@ static void ggml_sycl_mul_mat_id(const ggml_tensor *src0,
         src1_row_extra.data_device[g_main_device_index] = src1_contiguous.get();
         dst_row_extra.data_device[g_main_device_index]  =  dst_contiguous.get();
 
-        const dpct::memcpy_direction src1_kind =
-            src1->backend == GGML_BACKEND_CPU ? dpct::host_to_device
-                                              : dpct::device_to_device;
-        const dpct::memcpy_direction dst_kind = dst->backend == GGML_BACKEND_CPU
-                                                    ? dpct::device_to_host
-                                                    : dpct::device_to_device;
-
         for (int32_t row_id = 0; row_id < n_as; ++row_id) {
             const struct ggml_tensor * src0_row = dst->src[row_id + 2];
 
@@ -14788,6 +14806,12 @@ static size_t ggml_backend_sycl_buffer_type_get_alignment(ggml_backend_buffer_ty
     UNUSED(buft);
 }
 
+static size_t ggml_backend_sycl_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
+    return dpct::get_current_device().get_max_mem_alloc_size();
+
+    UNUSED(buft);
+}
+
 static size_t ggml_backend_sycl_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
     int64_t row_low = 0;
     int64_t row_high = ggml_nrows(tensor);
@@ -14818,7 +14842,7 @@ static ggml_backend_buffer_type_i ggml_backend_sycl_buffer_type_interface = {
     /* .get_name         = */ ggml_backend_sycl_buffer_type_name,
     /* .alloc_buffer     = */ ggml_backend_sycl_buffer_type_alloc_buffer,
     /* .get_alignment    = */ ggml_backend_sycl_buffer_type_get_alignment,
-    /* .get_max_size     = */ NULL, // TODO: return device.maxBufferLength
+    /* .get_max_size     = */ ggml_backend_sycl_buffer_type_get_max_size,
     /* .get_alloc_size   = */ ggml_backend_sycl_buffer_type_get_alloc_size,
     /* .supports_backend = */ ggml_backend_sycl_buffer_type_supports_backend,
     /* .is_host          = */ nullptr,
